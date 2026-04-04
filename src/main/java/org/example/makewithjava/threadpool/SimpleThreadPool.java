@@ -4,32 +4,63 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 
 public class SimpleThreadPool {
-    private final List<SimpleWorkerThread> threads = new ArrayList<>();
+    private final List<Thread> threads = new ArrayList<>();
     private final int poolSize;
     private final int queueSize;
     private final BlockingQueue<Runnable> queue;
-    private boolean shutdown = false;
+    private volatile boolean shutdown = false;
+    private volatile boolean shutdownNow = false;
 
 
     public SimpleThreadPool(int poolSize, int queueSize) {
         this.poolSize = poolSize;
         this.queueSize = queueSize;
-        this.queue = new ArrayBlockingQueue<>(10);
+        this.queue = new ArrayBlockingQueue<>(this.queueSize);
         for (int i = 0; i < poolSize; i++) {
-            this.threads.add(new SimpleWorkerThread(this));
+            this.threads.add(new Thread(new SimpleWorkerThread(this)));
         }
-        for (SimpleWorkerThread worker : threads) {
-            new Thread(worker).start();
+
+        for (Thread thread : threads) {
+            thread.start();
         }
     }
 
-    public void submit(Runnable task) {
-        this.queue.add(task);
+    public void submit(Runnable task) throws InterruptedException, RejectedExecutionException {
+        if (shutdown) {
+            throw new RejectedExecutionException("Executor has been shutdown");
+        }
+
+        this.queue.put(task);
     }
 
-    public boolean shutdown() {
+    public void shutdown() {
+        this.shutdown = true;
+        for (Thread thread : threads) {
+            thread.interrupt();
+        }
+    }
+
+
+    public List<Runnable> shutdownNow() {
+        this.shutdown = true;
+        this.shutdownNow = true;
+        List<Runnable> remainingTasks = new ArrayList<>();
+        this.queue.drainTo(remainingTasks);
+        for (Thread thread : threads) {
+            thread.interrupt();
+        }
+        return remainingTasks;
+    }
+
+    public boolean isShutdownNow() {
+        return this.shutdownNow;
+    }
+
+
+    public boolean isShutdown() {
         return this.shutdown;
     }
 
