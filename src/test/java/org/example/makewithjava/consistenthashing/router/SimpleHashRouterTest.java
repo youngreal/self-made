@@ -50,8 +50,9 @@ class SimpleHashRouterTest {
         }
     }
 
+    // 모듈러 해싱의 rehash 문제 -> 대규모 캐시미스 발생
     @Test
-    void 노드_3개에서_4개로_바꾸면_키의_70퍼센트_이상이_다른_노드로_이동한다_모듈러_해싱의_치명적_단점() {
+    void 페이지_77_노드_3개에서_4개로_바꾸면_키의_70퍼센트_이상이_다른_노드로_이동한다() {
         SimpleHashRouter<ServerNode> router = createRouter(3);
         int totalKeys = 10_000;
 

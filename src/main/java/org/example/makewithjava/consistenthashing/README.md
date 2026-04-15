@@ -1,7 +1,7 @@
 # Consistent Hashing — 직접 구현 & 벤치마크
 
 "가상면접 사례로 배우는 대규모 시스템 설계 기초" 5장(안정 해시 설계)을 직접 구현하면서,
-**modulo 해싱이 왜 망하는지**와 **consistent hashing이 얼마나 개선하는지**를 수치로 증명한 프로젝트.
+**모듈러 해싱**과 **안정해시의 차이점**을 수치화한 프로젝트.
 
 ## 구조
 
@@ -20,12 +20,13 @@ consistenthashing/
 └── benchmark/
     ├── BenchmarkRunner.java       (./gradlew runBenchmark 진입점)
     ├── RebalanceBenchmark.java    (노드 추가 시 키 이동률 측정)
-    └── VirtualNodeBenchmark.java  (가상 노드 개수에 따른 분포 균등성)
+    ├── VirtualNodeBenchmark.java  (가상 노드 개수에 따른 분포 균등성)
+    └── CacheMissBenchmark.java    (Zipfian 트래픽 + 추가/제거 시나리오별 미스율)
 ```
 
 ## 핵심 아이디어
 
-### 문제 — Modulo 해싱이 망하는 이유
+### 문제 — Modulo 해싱의 단점
 
 ```java
 int index = (int) Long.remainderUnsigned(hash, nodes.size());
@@ -78,7 +79,35 @@ return ring.get(targetHash).getPhysicalNode();
 
 - 가상노드 1개 → 1000개로 늘리면 **표준편차 약 18배 감소**
 - 150 근처에서 50보다 약간 높은 건 단일 실행의 랜덤 노이즈 — 여러 번 평균이 필요
-- Ketama(libmemcached) 표준값이 **160**인 이유: 50~200 구간에서 개선폭이 완만해짐 (diminishing returns)
+- Ketama(libmemcached) 표준값이 **160**인 이유: 50~200 구간에서 개선폭이 완만해짐
+
+### 3) Cache Miss Benchmark — 시나리오별 재배치/미스율/부하불균형
+
+**Zipfian(s=1.0) 분포** 100,000 요청, 1000 고유 키, 상위 10개 키가 트래픽의 39%를 차지.
+초기 3노드 + `ADD(+1)` 또는 `REMOVE(-1)` 이후 재측정.
+
+| scenario        | router     | 재배치율 | 미스율  | 미스 건수 | 부하불균형 σ | 제거 노드   |
+|-----------------|------------|---------:|--------:|----------:|-------------:|-------------|
+| **ADD (+1)**        | Simple     |  74.30%  | 69.34%  |   69,337  |    8,089.5   | -           |
+| **ADD (+1)**        | Consistent |  25.50%  | 22.97%  |   22,972  |    7,885.8   | -           |
+| **REMOVE first**    | Simple     |  65.70%  | 67.55%  |   67,550  |    6,415.0   | server-1    |
+| **REMOVE first**    | Consistent |  34.70%  | 31.75%  |   31,748  |   14,671.0   | server-1    |
+| **REMOVE busiest**  | Simple     |  66.60%  | 76.97%  |   76,966  |    6,415.0   | server-3    |
+| **REMOVE busiest**  | Consistent |  36.00%  | **44.00%** | **43,996** |    9,405.0   | server-3    |
+
+**핵심 관찰 5가지**:
+
+1. **ADD +1**: Consistent는 이론값 `k/n ≈ 25%` 근처(25.5%)에 정확히 수렴. Simple은 74% 이상 재배치.
+2. **REMOVE first**: Simple은 `hash % 3 → hash % 2`로 거의 전부 섞임(66%). Consistent는 `k/n ≈ 33%` 근처(34.7%)로 제한.
+3. **REMOVE busiest ≫ REMOVE first**: 최다 트래픽 노드를 잃으면 **인기 키가 쓸려나감** → 미스율 +10%p 이상 증폭. Consistent 31.75% → 44.00%.
+4. **미스 "건수" 격차**: 10만 요청 기준 Simple 77K vs Consistent 44K. **DB 부하 배수** 차이는 1.75배.
+5. **부하불균형 σ (Consistent REMOVE)**: 14,671로 가장 큼. 제거된 노드의 키가 **링 시계방향 인접 노드로 몰리기** 때문. 이게 consistent hashing이 완벽하지 않은 순간 — 장애 복구 시 **hot spot** 유발.
+
+**실무 시사점**:
+- 재배치율(이론 지표)만 보지 말고 **트래픽 가중 미스율**을 같이 측정해야 함
+- 노드 **제거**가 추가보다 항상 더 아픔. 장애 시나리오를 벤치마크에 꼭 포함
+- Consistent의 REMOVE 부하불균형 → **bounded-load consistent hashing** (Google 2017)이 나온 동기
+- 운영에선 **단일 장애 = 인접 노드 2배 부하** 가정으로 용량 계획
 
 ## 실행 방법
 
@@ -87,19 +116,9 @@ return ring.get(targetHash).getPhysicalNode();
 ./gradlew runBenchmark      # 벤치마크 suite 실행
 ```
 
-## 실무 맥락
+## 한계
 
-- **쓰는 곳**: DynamoDB, Cassandra, Memcached(Ketama), Discord 메시지 라우팅, Envoy `ring_hash`
-- **안 쓰는 곳**: **Redis Cluster** — hash slot 16384로 고정 샤딩. 운영 단순성이 유연성보다 우선인 선택.
-- **한계**: Hot key 문제는 consistent hashing으로 해결 안 됨. 저스틴 비버 트윗처럼 **한 키에 요청이 쏠리는 건** 별개 문제. 확장 기법:
+- Hot key 문제는 consistent hashing으로 해결 안 됨. 저스틴 비버 트윗처럼 **한 키에 요청이 쏠리는 건** 별개 문제. 확장 기법:
   - Bounded-load consistent hashing (Google, 2017)
   - Replication + power of two choices
   - Client-side L1 캐시
-
-## 배운 것
-
-- `TreeMap.tailMap`의 O(log N) 탐색 특성 (HashMap으로는 불가)
-- `Long.remainderUnsigned`로 해시 음수 오버플로우 회피
-- `Long.MIN_VALUE`의 `Math.abs` 함정 (양수 안 됨)
-- Java 제네릭 `<T extends Node>`의 선언 위치 규칙
-- 테스트가 "설계 문서"가 되는 패턴 — T3가 modulo 해싱의 치명적 단점을 코드로 증명
