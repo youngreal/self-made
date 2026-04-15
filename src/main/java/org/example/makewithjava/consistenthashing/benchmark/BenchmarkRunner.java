@@ -11,6 +11,7 @@ public class BenchmarkRunner {
 
         RebalanceBenchmark.run();
         VirtualNodeBenchmark.run();
+        CacheMissBenchmark.run();
 
         System.out.println("==================================================================");
         System.out.println(" Benchmark completed.");
