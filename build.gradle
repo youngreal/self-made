@@ -27,3 +27,16 @@ dependencies {
 tasks.named('test') {
     useJUnitPlatform()
 }
+
+tasks.register('runBenchmark', JavaExec) {
+    group = 'application'
+    description = 'Consistent Hashing 벤치마크 실행'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'org.example.makewithjava.consistenthashing.benchmark.BenchmarkRunner'
+    jvmArgs = ['-Dfile.encoding=UTF-8', '-Dstdout.encoding=UTF-8', '-Dstderr.encoding=UTF-8']
+    standardOutput = System.out
+}
+
+compileJava {
+    options.encoding = 'UTF-8'
+}
